@@ -26,12 +26,12 @@ For a goal that requires `Result: 42`, a program that prints `Result: 41` and ex
 ## Run locally
 
 ```bash
-pip install -r requirements.txt
-python main.py --backend mock --sandbox subprocess fibonacci
-python main.py --backend mock --sandbox subprocess "bug demo: division" --verbose
+pip install .
+mamv-ir --backend mock --sandbox subprocess fibonacci --receipt --save-run run.json
+mamv-ir --backend mock --sandbox subprocess "bug demo: division" --verbose
 ```
 
-The offline `MockLLM` is deterministic and all tests run without an API key or network.
+`--receipt` prints the acceptance criteria, confidence, related claims, and constitutional violations for either a successful or failed run. `--save-run PATH` writes the complete JSON record, including claims, evidence, and ledger events; load it later with `deserialize_run`. The offline `MockLLM` is deterministic and all tests run without an API key or network. Contributors should see [CONTRIBUTING.md](CONTRIBUTING.md) for extension points and local checks.
 
 ## Kimi and other providers
 
@@ -40,7 +40,7 @@ Kimi remains supported through `KimiK3Backend`, using Moonshot's OpenAI-compatib
 ```bash
 export MOONSHOT_API_KEY=your-key
 # optional: export MOONSHOT_BASE_URL=https://api.moonshot.cn/v1
-python main.py --backend kimi --sandbox subprocess "Write a Python program"
+mamv-ir --backend kimi --sandbox subprocess "Write a Python program"
 ```
 
 To add another provider, implement the provider-neutral `LLMBackend.chat(messages) -> str` interface in `agent/llm.py`; do not add governance behavior to the adapter. The graph depends only on that interface.

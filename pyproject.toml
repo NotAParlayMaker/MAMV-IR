@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mamv-ir"
+version = "0.2.0"
+description = "MAMV-IR is an informational-governance operating layer for reasoning models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "MAMV-IR contributors" }]
+dependencies = [
+    "langgraph==1.2.9",
+    "openai==2.46.0",
+    "docker==7.2.0",
+    "python-dotenv==1.2.2",
+    "pytest==9.1.1",
+]
+
+[project.scripts]
+mamv-ir = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "graph", "llm", "sandbox", "state"]
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
