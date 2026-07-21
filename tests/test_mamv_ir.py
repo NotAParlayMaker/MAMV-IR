@@ -2,6 +2,7 @@ import json
 from agent.graph import run_agent
 from agent.informational.constitution import review
 from agent.informational.models import Claim, Context, Evidence, new_id
+from agent.informational.observers import authorize_claim_verification
 from agent.informational.serialization import deserialize_run, export_claim_evidence_graph, serialize_run
 from agent.llm import LLMBackend, MockLLM, get_backend
 from agent.sandbox import SubprocessSandbox
@@ -68,3 +69,124 @@ def test_contradictory_evidence_is_retained():
 def test_kimi_adapter_remains_available():
     from agent.llm import KimiK3Backend
     assert KimiK3Backend.__name__ == "KimiK3Backend"
+
+class VerificationLLM(LLMBackend):
+    def __init__(self, code, test_code=None, static=False):
+        self.code = code
+        self.test_code = test_code
+        self.static = static
+
+    def chat(self, messages):
+        text = "\n".join(message["content"] for message in messages)
+        if "Interpret the goal as JSON" in text:
+            criterion = {
+                "description": "tests pass",
+                "verification_method": "tests_pass",
+                "required": True,
+            }
+            if self.static:
+                criterion = {
+                    "description": "static analysis passes",
+                    "verification_method": "passes_static_analysis",
+                    "required": True,
+                }
+            payload = {
+                "normalized_goal": "verification goal",
+                "assumptions": [],
+                "ambiguities": [],
+                "acceptance_criteria": [criterion],
+                "required_evidence": [],
+            }
+            if self.test_code is not None:
+                payload["test_code"] = self.test_code
+            return json.dumps(payload)
+        if "planning" in text:
+            return "PLAN"
+        return f"```python\n{self.code}\n```"
+
+
+def test_passing_tests_produce_authorized_test_runner_evidence():
+    state = run_agent(
+        "verification goal",
+        VerificationLLM(
+            "def answer():\n    return 42",
+            "from generated import answer\n\ndef test_answer():\n    assert answer() == 42",
+        ),
+        SubprocessSandbox(),
+        1,
+    )
+    evidence = next(
+        item for item in state["evidence"] if item.evidence_type == "test_result"
+    )
+    assert evidence.source == "test_runner"
+    assert evidence.value["passed"] is True
+    claim = next(item for item in state["claims"] if item.observer == "test_runner")
+    assert authorize_claim_verification(claim, state["evidence"]).allowed
+    assert state["verification_results"][0].satisfied
+
+
+def test_failing_tests_are_not_confused_with_runtime_exit_code():
+    state = run_agent(
+        "verification goal",
+        VerificationLLM(
+            "def answer():\n    return 41",
+            "from generated import answer\n\ndef test_answer():\n    assert answer() == 42",
+        ),
+        SubprocessSandbox(),
+        1,
+    )
+    test_evidence = next(
+        item for item in state["evidence"] if item.evidence_type == "test_result"
+    )
+    assert test_evidence.value["passed"] is False
+    assert state["attempts"][0].exit_code == 0
+    result = state["verification_results"][0]
+    assert not result.satisfied
+    assert test_evidence.evidence_id in result.contradictory_evidence_ids
+
+
+def test_missing_test_code_abstains_cleanly():
+    state = run_agent(
+        "verification goal", VerificationLLM("print('ok')"), SubprocessSandbox(), 1
+    )
+    result = state["verification_results"][0]
+    assert not result.satisfied
+    assert "No test evidence available" in result.explanation
+    assert not any(item.evidence_type == "test_result" for item in state["evidence"])
+
+
+def test_static_analysis_has_distinct_passing_and_failing_evidence():
+    clean = run_agent(
+        "verification goal",
+        VerificationLLM("print('ok')", static=True),
+        SubprocessSandbox(),
+        1,
+    )
+    broken = run_agent(
+        "verification goal",
+        VerificationLLM("def broken(:\n    pass", static=True),
+        SubprocessSandbox(),
+        1,
+    )
+    clean_evidence = next(
+        item
+        for item in clean["evidence"]
+        if item.evidence_type == "static_analysis_result"
+    )
+    broken_evidence = next(
+        item
+        for item in broken["evidence"]
+        if item.evidence_type == "static_analysis_result"
+    )
+    assert (
+        clean_evidence.source == "static_analyzer"
+        and clean_evidence.value["passed"] is True
+    )
+    assert (
+        broken_evidence.source == "static_analyzer"
+        and broken_evidence.value["passed"] is False
+    )
+    assert broken["attempts"][0].exit_code != 0
+    static_claim = next(item for item in broken["claims"] if item.observer == "static_analyzer")
+    assert authorize_claim_verification(static_claim, broken["evidence"]).allowed
+    assert not broken["verification_results"][0].satisfied

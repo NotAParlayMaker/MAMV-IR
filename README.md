@@ -15,7 +15,7 @@ interpret_goal → plan → generate_code → execute → collect_evidence → v
 
 ## Information model
 
-Every run records JSON-serializable `Context`, `Evidence`, `Claim`, `AcceptanceCriterion`, `VerificationResult`, immutable `ExecutionAttempt`, and chronological `LedgerEvent` records. Sandbox observations authoritatively establish stdout, stderr, exit code, and timeout only. Test runners and static analyzers own their respective results. The reasoning model cannot verify an unobserved runtime fact.
+Every run records JSON-serializable `Context`, `Evidence`, `Claim`, `AcceptanceCriterion`, `VerificationResult`, immutable `ExecutionAttempt`, and chronological `LedgerEvent` records. Sandbox observations authoritatively establish stdout, stderr, exit code, and timeout only. Test runners and static analyzers now produce and own their respective results: `test_result` is authored by `test_runner`, while `static_analysis_result` is authored by `static_analyzer`. The reasoning model cannot verify an unobserved runtime fact.
 
 Required criteria are evaluated independently. Completion requires an execution, every required criterion supported at the configurable `MAMV_IR_CONFIDENCE_THRESHOLD` (default `0.80`), no contradiction, and a passing constitutional review. Failed diagnoses and repair predictions are retained and marked contradicted rather than erased.
 
@@ -51,7 +51,8 @@ To add another provider, implement the provider-neutral `LLMBackend.chat(message
 
 ## Current limitations
 
-- Acceptance criteria are currently deterministic methods (`exit_code` and `stdout_contains`) plus an explicit-evidence fallback; richer test and static-analysis integrations are future work.
+- Acceptance criteria also support `tests_pass` when goal interpretation supplies optional `test_code`. The test runner writes generated code and that test module into the selected sandbox and runs `python -m pytest -q`; absent `test_code` produces explicit “no test evidence available” abstention rather than a pass.
+- `passes_static_analysis` performs only offline Python `ast.parse`/`compile` syntax validation and rejects bare `except:` clauses. It is intentionally not a full linter, type checker, security scanner, or semantic correctness check.
 - Generated code is still a single Python script.
 - The subprocess sandbox is a development fallback, not a host-security boundary; use Docker for untrusted code.
 - A model can propose a weak or ambiguous goal interpretation, but ambiguity is retained and cannot silently satisfy missing evidence.
@@ -81,7 +82,7 @@ The event chain detects changes to records supplied to validation, but does not
 provide external timestamping, key signatures, durable storage, or protection
 against an attacker who can replace an entire ledger and its trust anchor. The
 subprocess sandbox remains explicitly **not** a real host isolation boundary.
-The graph currently performs direct runtime checks (`exit_code`,
-`stdout_contains`, and `not_timed_out`); test/static-analysis integrations
-require their own authoritative evidence producers before they can verify a
-criterion.
+The graph supports direct runtime checks (`exit_code`, `stdout_contains`, and
+`not_timed_out`), sandboxed pytest-backed `tests_pass`, and the deliberately
+minimal `passes_static_analysis` check. Static analysis does not replace a
+full linter, type checker, security scanner, or tests.
