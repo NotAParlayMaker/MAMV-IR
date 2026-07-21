@@ -1,0 +1,2 @@
+GOAL_INTERPRETATION = """Interpret the goal as JSON only with keys normalized_goal, assumptions, ambiguities, acceptance_criteria, required_evidence. acceptance_criteria is a list of objects with description, verification_method, required, expected_result. Do not claim ambiguous outcomes are satisfied."""
+CORRECT_JSON = "Your previous response was malformed. Return valid JSON only matching the requested schema."
