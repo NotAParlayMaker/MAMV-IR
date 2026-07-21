@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping
 from uuid import uuid4
 
-EvidenceType = Literal["stdout", "stderr", "exit_code", "timeout", "test_result", "static_analysis_result", "generated_artifact", "human_feedback", "model_output"]
+EvidenceType = Literal["stdout", "stderr", "exit_code", "timeout", "test_result", "static_analysis_result", "generated_artifact", "human_feedback", "model_output", "model_output_unparseable", "llm_call_failure"]
 ClaimType = Literal["observation", "interpretation", "inference", "prediction", "normative_judgment"]
 ClaimStatus = Literal["proposed", "supported", "disputed", "contradicted", "verified", "superseded", "insufficient_evidence"]
 ApprovalStatus = Literal["proposed", "approved", "rejected"]

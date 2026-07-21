@@ -10,15 +10,20 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import List, Dict
+
+
+class LLMCallFailed(RuntimeError):
+    """Raised when the real provider remains unavailable after retries."""
 
 
 class LLMBackend(ABC):
     """Minimal interface every LLM backend must satisfy."""
 
     @abstractmethod
-    def chat(self, messages: List[Dict[str, str]]) -> str:
+    def chat(self, messages: List[Dict[str, str]], temperature: float | None = None) -> str:
         """Send a list of {role, content} messages, return the reply text."""
         raise NotImplementedError
 
@@ -37,6 +42,8 @@ class KimiK3Backend(LLMBackend):
         api_key: str | None = None,
         base_url: str | None = None,
         temperature: float = 0.3,
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 0.1,
     ):
         from openai import (
             OpenAI,
@@ -44,19 +51,33 @@ class KimiK3Backend(LLMBackend):
 
         self.model = model
         self.temperature = temperature
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
         api_key = api_key or os.environ.get("MOONSHOT_API_KEY")
         if not api_key:
             raise RuntimeError("MOONSHOT_API_KEY is not set. Export it or pass api_key= explicitly.")
         base_url = base_url or os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
-    def chat(self, messages: List[Dict[str, str]]) -> str:
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-        )
-        return response.choices[0].message.content or ""
+    def chat(self, messages: List[Dict[str, str]], temperature: float | None = None) -> str:
+        """Retry SDK-defined transient API failures, preserving per-call temperature."""
+        from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+
+        transient_errors = (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError)
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature if temperature is None else temperature,
+                )
+                return response.choices[0].message.content or ""
+            except transient_errors as exc:
+                if attempt == self.max_retries:
+                    raise LLMCallFailed(
+                        f"Kimi K3 remained unavailable after {attempt + 1} attempts: {exc}"
+                    ) from exc
+                time.sleep(self.retry_backoff_seconds * (2**attempt))
 
 
 class MockLLM(LLMBackend):
@@ -73,7 +94,7 @@ class MockLLM(LLMBackend):
     def __init__(self):
         self._call_count = 0
 
-    def chat(self, messages: List[Dict[str, str]]) -> str:
+    def chat(self, messages: List[Dict[str, str]], temperature: float | None = None) -> str:
         self._call_count += 1
         joined = "\n".join(m["content"] for m in messages)
 

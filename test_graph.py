@@ -35,8 +35,21 @@ class StubbornMockLLM(MockLLM):
 def test_gives_up_after_max_iterations():
     state = run_agent("unfixable task", StubbornMockLLM(), SubprocessSandbox(), max_iterations=3)
     assert state["success"] is False
-    assert state["iteration"] == 3
-    assert "max_iterations" in state["final_answer"]
+    assert state["completion_status"] == "stuck_in_loop"
+    assert "repeats" in state["final_answer"]
+
+
+def test_repeated_repair_abstains_before_another_sandbox_run():
+    class RepeatingRepairLLM(MockLLM):
+        def chat(self, messages):
+            joined = "\n".join(message["content"] for message in messages)
+            if "You are planning" in joined:
+                return "PLAN: deliberately fail."
+            return "```python\nraise RuntimeError('same broken code')\n```"
+
+    state = run_agent("unfixable task", RepeatingRepairLLM(), SubprocessSandbox(), max_iterations=5)
+    assert state["completion_status"] == "stuck_in_loop"
+    assert len(state["attempts"]) == 1
 
 
 def test_llm_backend_is_swappable():

@@ -6,6 +6,8 @@ import ast
 import hashlib
 import json
 import os
+import inspect
+from difflib import SequenceMatcher
 from typing import Any
 
 from langgraph.graph import END, StateGraph
@@ -24,17 +26,16 @@ from .informational.models import (
     now,
 )
 from .informational.observers import authorize_claim_verification
-from .llm import LLMBackend
-from .prompts import CORRECT_JSON, GOAL_INTERPRETATION
+from .llm import LLMBackend, LLMCallFailed
+from .prompts import (
+    CORRECT_JSON, DIAGNOSE_PROMPT, DIAGNOSE_SYSTEM_PROMPT, GENERATE_PROMPT,
+    GENERATE_SYSTEM_PROMPT, GOAL_INTERPRETATION, MISSING_CODE_FENCE,
+    PLAN_PROMPT, PLAN_SYSTEM_PROMPT, REPAIR_PROMPT, REPAIR_SYSTEM_PROMPT,
+)
 from .sandbox import Sandbox
 from .state import AgentState
 
 CONFIDENCE_THRESHOLD = float(os.environ.get("MAMV_IR_CONFIDENCE_THRESHOLD", "0.80"))
-SYSTEM_PROMPT = (
-    "You are a provider-agnostic reasoning model. Generate plans, code, and "
-    "interpretations, but never represent unobserved facts as verified. Return "
-    "Python in one ```python block when asked for code."
-)
 _BUILTIN_METHODS = {
     "exit_code",
     "stdout_contains",
@@ -42,6 +43,7 @@ _BUILTIN_METHODS = {
     "tests_pass",
     "passes_static_analysis",
 }
+LOOP_SIMILARITY_THRESHOLD = 1.0
 
 
 def _append(state: AgentState, key: str, item: Any) -> list[Any]:
@@ -73,24 +75,64 @@ def _event(state: AgentState, event_type: str, actor: str, context: Context, pay
     )
 
 
-def _extract_code(reply: str) -> str:
+def _chat(llm: LLMBackend, messages: list[dict[str, str]], temperature: float) -> str:
+    """Use the override when supported while keeping legacy adapters compatible."""
+    parameters = inspect.signature(llm.chat).parameters.values()
+    if "temperature" in inspect.signature(llm.chat).parameters or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
+        return llm.chat(messages, temperature=temperature)
+    return llm.chat(messages)
+
+
+def _fenced_code(reply: str) -> str | None:
     marker = "```python"
     start = reply.find(marker)
     if start < 0:
-        return reply.strip()
+        return None
     start += len(marker)
     end = reply.find("```", start)
-    return reply[start if end < 0 else start : end].strip()
+    return reply[start : end].strip() if end >= 0 else None
+
+
+def _extract_code(llm: LLMBackend, messages: list[dict[str, str]], reply: str, temperature: float) -> tuple[str | None, list[str]]:
+    """Request one corrective response before declaring model code unparseable."""
+    responses = [reply]
+    code = _fenced_code(reply)
+    if code is not None:
+        return code, responses
+    corrected_messages = [*messages, {"role": "assistant", "content": reply}, {"role": "user", "content": MISSING_CODE_FENCE}]
+    corrected = _chat(llm, corrected_messages, temperature)
+    responses.append(corrected)
+    return _fenced_code(corrected), responses
+
+
+def _attempt_history(attempts: list[ExecutionAttempt]) -> str:
+    """Render every prior execution so a repair can avoid known-bad fixes."""
+    return "\n\n".join(
+        f"Attempt {index}:\n```python\n{attempt.code}\n```\n"
+        f"Failure evidence: stdout={attempt.stdout!r}; stderr={attempt.stderr!r}; "
+        f"exit_code={attempt.exit_code}; timed_out={attempt.timed_out}"
+        for index, attempt in enumerate(attempts, start=1)
+    )
+
+
+def _is_repeated_repair(code: str, attempts: list[ExecutionAttempt]) -> bool:
+    """Reject exact normalized-code repeats (similarity ratio of 1.0)."""
+    normalized = "\n".join(line.rstrip() for line in code.strip().splitlines())
+    return any(
+        SequenceMatcher(None, normalized, "\n".join(line.rstrip() for line in attempt.code.strip().splitlines())).ratio()
+        >= LOOP_SIMILARITY_THRESHOLD
+        for attempt in attempts
+    )
 
 
 def _structured_goal(llm: LLMBackend, goal: str) -> tuple[dict, list[str]]:
     raw_responses: list[str] = []
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": PLAN_SYSTEM_PROMPT},
         {"role": "user", "content": f"Goal: {goal}\n\n{GOAL_INTERPRETATION}"},
     ]
     for _ in range(2):
-        reply = llm.chat(messages)
+        reply = _chat(llm, messages, 0.3)
         raw_responses.append(reply)
         try:
             payload = json.loads(reply)
@@ -173,9 +215,24 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
     """Build the evidence-producing graph and its verification/retry loop."""
     graph = StateGraph(AgentState)
 
+    def llm_unavailable(state: AgentState, exc: LLMCallFailed) -> AgentState:
+        context = _context(state)
+        evidence = Evidence(new_id("ev"), "llm_call_failure", str(exc), "reasoning_model", context, {"authoritative": False})
+        return {**state, "evidence": _append(state, "evidence", evidence), "done": True, "success": False,
+                "completion_status": "llm_unavailable", "final_answer": "Abstained: the LLM provider was unavailable."}
+
+    def unparseable_output(state: AgentState, responses: list[str]) -> AgentState:
+        context = _context(state)
+        evidence = Evidence(new_id("ev"), "model_output_unparseable", responses, "reasoning_model", context, {"structured": False})
+        return {**state, "evidence": _append(state, "evidence", evidence), "done": True, "success": False,
+                "completion_status": "model_output_unparseable", "final_answer": "Abstained: the model did not return parseable fenced Python code."}
+
     def interpret_goal(state: AgentState) -> AgentState:
         """Propose goal criteria and retain model-output evidence; may retain test_code."""
-        payload, raw_responses = _structured_goal(llm, state["goal"])
+        try:
+            payload, raw_responses = _structured_goal(llm, state["goal"])
+        except LLMCallFailed as exc:
+            return llm_unavailable(state, exc)
         context = _context(state)
         criteria = [
             AcceptanceCriterion(
@@ -243,37 +300,24 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
 
     def plan(state: AgentState) -> AgentState:
         """Produce a non-authoritative plan consumed by code generation."""
-        reply = llm.chat(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"You are planning. Goal: {state['normalized_goal']}",
-                },
-            ]
-        )
-        return {
-            **state,
-            "plan": reply,
-            "scratchpad": _append(state, "scratchpad", f"[plan]\n{reply}"),
-        }
+        messages = [{"role": "system", "content": PLAN_SYSTEM_PROMPT}, {"role": "user", "content": PLAN_PROMPT.format(goal=state["normalized_goal"])}]
+        try:
+            reply = _chat(llm, messages, 0.5)
+        except LLMCallFailed as exc:
+            return llm_unavailable(state, exc)
+        return {**state, "plan": reply, "scratchpad": _append(state, "scratchpad", f"[plan]\n{reply}")}
 
     def generate(state: AgentState) -> AgentState:
-        """Generate candidate code; this node produces no verification claim."""
-        reply = llm.chat(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Goal: {state['normalized_goal']}\nPlan: {state['plan']}\nWrite Python code and print Result:.",
-                },
-            ]
-        )
-        return {
-            **state,
-            "current_code": _extract_code(reply),
-            "scratchpad": _append(state, "scratchpad", f"[generate_code]\n{reply}"),
-        }
+        """Generate candidate code; malformed model output causes abstention, not execution."""
+        messages = [{"role": "system", "content": GENERATE_SYSTEM_PROMPT}, {"role": "user", "content": GENERATE_PROMPT.format(goal=state["normalized_goal"], plan=state["plan"])}]
+        try:
+            reply = _chat(llm, messages, 0.3)
+            code, responses = _extract_code(llm, messages, reply, 0.3)
+        except LLMCallFailed as exc:
+            return llm_unavailable(state, exc)
+        if code is None:
+            return unparseable_output(state, responses)
+        return {**state, "current_code": code, "scratchpad": _append(state, "scratchpad", "[generate_code]\n" + "\n".join(responses))}
 
     def execute(state: AgentState) -> AgentState:
         """Execute runtime/tests and static checks, producing provenance-bound evidence."""
@@ -555,78 +599,32 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
         """Interpret failed evidence for repair; it produces no verified fact."""
         attempt = state["attempts"][-1]
         context = _context(state, attempt.code)
-        failed = "; ".join(
-            result.explanation for result in state.get("verification_results", []) if not result.satisfied
-        )
-        reply = llm.chat(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Diagnose failed criteria using evidence only: {failed}",
-                },
-            ]
-        )
-        claim = Claim(
-            new_id("claim"),
-            reply,
-            "interpretation",
-            "reasoning_model",
-            context,
-            attempt.evidence_ids,
-            0.8,
-            "supported",
-        )
-        return {
-            **state,
-            "claims": _append(state, "claims", claim),
-            "ledger_events": _append(
-                state,
-                "ledger_events",
-                _event(
-                    state,
-                    "diagnosed",
-                    "reasoning_model",
-                    context,
-                    {"attempt_id": attempt.attempt_id},
-                ),
-            ),
-        }
+        failed = "; ".join(result.explanation for result in state.get("verification_results", []) if not result.satisfied)
+        try:
+            reply = _chat(llm, [{"role": "system", "content": DIAGNOSE_SYSTEM_PROMPT}, {"role": "user", "content": DIAGNOSE_PROMPT.format(failure=failed)}], 0.1)
+        except LLMCallFailed as exc:
+            return llm_unavailable(state, exc)
+        claim = Claim(new_id("claim"), reply, "interpretation", "reasoning_model", context, attempt.evidence_ids, 0.8, "supported")
+        return {**state, "claims": _append(state, "claims", claim), "ledger_events": _append(state, "ledger_events", _event(state, "diagnosed", "reasoning_model", context, {"attempt_id": attempt.attempt_id}))}
 
     def repair(state: AgentState) -> AgentState:
-        """Propose repaired code and retain a prediction linked to past evidence."""
+        """Propose repaired code using all failed attempts as context."""
         last = state["attempts"][-1]
         context = _context(state, last.code)
         retained = list(state["claims"])
-        diagnosis = next(
-            (claim.statement for claim in reversed(retained) if claim.claim_type == "interpretation"),
-            "No diagnosis available.",
-        )
-        prompt = f"Diagnosis: {diagnosis}\nGoal: {state['normalized_goal']}\nCode:\n```python\n{last.code}\n```\nEvidence: stdout={last.stdout!r}; stderr={last.stderr!r}. Fix the code and return corrected code only."
-        reply = llm.chat(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ]
-        )
-        code = _extract_code(reply)
-        prediction = Claim(
-            new_id("claim"),
-            "The proposed repair is predicted to satisfy the unsupported criteria when executed.",
-            "prediction",
-            "reasoning_model",
-            context,
-            last.evidence_ids,
-            0.5,
-            "proposed",
-            [claim.claim_id for claim in retained if claim.claim_type == "interpretation"],
-        )
-        return {
-            **state,
-            "current_code": code,
-            "claims": [*retained, prediction],
-            "scratchpad": _append(state, "scratchpad", f"[fix_code]\n{reply}"),
-        }
+        diagnosis = next((claim.statement for claim in reversed(retained) if claim.claim_type == "interpretation"), "No diagnosis available.")
+        messages = [{"role": "system", "content": REPAIR_SYSTEM_PROMPT}, {"role": "user", "content": REPAIR_PROMPT.format(diagnosis=diagnosis, goal=state["normalized_goal"], history=_attempt_history(state["attempts"]))}]
+        try:
+            reply = _chat(llm, messages, 0.1)
+            code, responses = _extract_code(llm, messages, reply, 0.1)
+        except LLMCallFailed as exc:
+            return llm_unavailable(state, exc)
+        if code is None:
+            return unparseable_output(state, responses)
+        if _is_repeated_repair(code, state["attempts"]):
+            return {**state, "done": True, "success": False, "completion_status": "stuck_in_loop", "final_answer": "Abstained: the proposed repair repeats a previously failed attempt.", "scratchpad": _append(state, "scratchpad", "[repair_loop_detected]\n" + "\n".join(responses))}
+        prediction = Claim(new_id("claim"), "The proposed repair is predicted to satisfy the unsupported criteria when executed.", "prediction", "reasoning_model", context, last.evidence_ids, 0.5, "proposed", [claim.claim_id for claim in retained if claim.claim_type == "interpretation"])
+        return {**state, "current_code": code, "claims": [*retained, prediction], "scratchpad": _append(state, "scratchpad", "[fix_code]\n" + "\n".join(responses))}
 
     def passthrough(state: AgentState) -> AgentState:
         """Preserve state between named graph phases without producing evidence."""
@@ -646,9 +644,9 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
     ):
         graph.add_node(name, node)
     graph.set_entry_point("interpret_goal")
-    graph.add_edge("interpret_goal", "plan")
-    graph.add_edge("plan", "generate_code")
-    graph.add_edge("generate_code", "execute")
+    graph.add_conditional_edges("interpret_goal", lambda state: "finish" if state.get("done") else "plan", {"finish": END, "plan": "plan"})
+    graph.add_conditional_edges("plan", lambda state: "finish" if state.get("done") else "generate_code", {"finish": END, "generate_code": "generate_code"})
+    graph.add_conditional_edges("generate_code", lambda state: "finish" if state.get("done") else "execute", {"finish": END, "execute": "execute"})
     graph.add_edge("execute", "collect_evidence")
     graph.add_edge("collect_evidence", "verify")
     graph.add_edge("verify", "constitutional_review")
@@ -657,8 +655,12 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
         lambda state: "finish" if state["done"] else "diagnose",
         {"finish": END, "diagnose": "diagnose"},
     )
-    graph.add_edge("diagnose", "propose_repair")
-    graph.add_edge("propose_repair", "fix_code")
+    graph.add_conditional_edges("diagnose", lambda state: "finish" if state.get("done") else "propose_repair", {"finish": END, "propose_repair": "propose_repair"})
+    graph.add_conditional_edges(
+        "propose_repair",
+        lambda state: "finish" if state.get("done") else "fix_code",
+        {"finish": END, "fix_code": "fix_code"},
+    )
     graph.add_edge("fix_code", "execute")
     return graph.compile()
 
