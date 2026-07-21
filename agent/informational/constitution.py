@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from .ledger import validate_ledger_chain
 from .models import Claim
 from .observers import authorize_claim_verification
+from .validation import validate_claim_requirements, validate_record_confidence
 @dataclass(frozen=True)
 class Violation:
     rule: str; subject_id: str; detail: str
@@ -17,10 +18,17 @@ def review(state: dict) -> list[str]:
     for kind, items, attr in (("duplicate_claim_id",claims,"claim_id"),("duplicate_evidence_id",evidence,"evidence_id"),("duplicate_ledger_event_id",events,"event_id")):
         for value in _dupes(items,attr): v.append(Violation(kind,value,"identifier is duplicated"))
     for claim in claims:
-        if not claim.observer: v.append(Violation("missing_observer",claim.claim_id,"has no observer."))
-        if not claim.context: v.append(Violation("missing_context",claim.claim_id,"has no context."))
-        if not 0 <= claim.confidence <= 1: v.append(Violation("invalid_confidence",claim.claim_id,"confidence is outside 0.0..1.0"))
-        if claim.claim_type != "observation" and not (claim.evidence_ids or claim.derived_from): v.append(Violation("missing_support",claim.claim_id,"non-observation lacks evidence or parent claims."))
+        for requirement, detail in {
+            "missing_observer": "has no observer.",
+            "missing_context": "has no context.",
+            "missing_support": "non-observation lacks evidence or parent claims.",
+        }.items():
+            if requirement in validate_claim_requirements(claim):
+                v.append(Violation(requirement,claim.claim_id,detail))
+        try:
+            validate_record_confidence(claim)
+        except ValueError as error:
+            v.append(Violation("invalid_confidence",claim.claim_id,str(error)))
         for eid in claim.evidence_ids:
             if eid not in eids: v.append(Violation("missing_evidence",claim.claim_id,f"references missing evidence {eid}."))
         for parent in claim.derived_from:
