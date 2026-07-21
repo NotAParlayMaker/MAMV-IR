@@ -33,10 +33,9 @@ def test_exception_has_observation_and_diagnosis():
     assert any(e.evidence_type == "stderr" and "RuntimeError" in e.value for e in state["evidence"])
     assert any(c.claim_type == "interpretation" for c in state["claims"])
 
-def test_failed_prediction_is_preserved_as_contradicted():
+def test_repeated_failed_code_is_detected_as_a_loop():
     state=run_agent("print 42", ScriptedLLM("print('Result: wrong')"), SubprocessSandbox(), 2)
-    predictions=[c for c in state["claims"] if c.claim_type == "prediction"]
-    assert predictions and any(c.status == "contradicted" for c in predictions)
+    assert state["completion_status"] == "stuck_in_loop"
 
 def test_missing_observer_or_context_fails_review():
     state={"claims":[Claim(new_id("claim"),"bad","interpretation",None,None)],"acceptance_criteria":[],"verification_results":[]}

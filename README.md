@@ -33,6 +33,32 @@ mamv-ir --backend mock --sandbox subprocess "bug demo: division" --verbose
 
 `--receipt` prints the acceptance criteria, confidence, related claims, and constitutional violations for either a successful or failed run. `--save-run PATH` writes the complete JSON record, including claims, evidence, and ledger events; load it later with `deserialize_run`. The offline `MockLLM` is deterministic and all tests run without an API key or network. Contributors should see [CONTRIBUTING.md](CONTRIBUTING.md) for extension points and local checks.
 
+## Reasoning-loop context and resilience
+
+Repair sees the complete execution-attempt history for a run: every prior code
+candidate is paired with its stdout, stderr, exit code, and timeout evidence.
+This gives the repair model direct context about fixes that already failed.
+To avoid spending iterations on a repeated known-bad candidate, MAMV-IR
+normalizes trailing whitespace and detects exact normalized-code repeats
+(similarity ratio **1.0**); it then abstains with `completion_status` of
+`stuck_in_loop` instead of executing that candidate again. The history is
+currently unbounded because `max_iterations` defaults to three, so it is small
+and complete in normal runs.
+
+Planning uses a more exploratory temperature (`0.5`), while diagnosis and
+repair use `0.1` and evidence-bound system prompts. Generation uses `0.3`.
+If generated or repaired output lacks a complete Python fence, the graph makes
+one corrective follow-up requesting exactly one fenced block; a second failure
+records `model_output_unparseable` evidence and abstains rather than running
+model prose in the sandbox.
+
+For Kimi, transient OpenAI-compatible connection, timeout, rate-limit, and
+server errors receive two retries after exponential backoff of 0.1 seconds and
+0.2 seconds (three total attempts). Exhaustion raises `LLMCallFailed`, which
+the graph records as `llm_unavailable`, distinct from a sandbox/code failure.
+`MockLLM` intentionally has no retry behavior, keeping offline tests fully
+deterministic.
+
 ## Kimi and other providers
 
 Kimi remains supported through `KimiK3Backend`, using Moonshot's OpenAI-compatible API:
