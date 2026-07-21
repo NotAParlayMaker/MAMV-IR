@@ -1,110 +1,57 @@
-# Moonshot-Agent-X
+# MAMV-IR
 
-An autonomous coding agent built around Kimi K3's chain-of-thought
-reasoning: given a goal, it plans out loud, writes Python, runs that code
-in a sandbox, reads the traceback if it fails, and fixes its own bugs —
-looping until the goal is solved or a hard iteration budget is spent.
+> **MAMV-IR is an informational-governance operating layer for reasoning models. It governs how claims are created, contextualized, supported, challenged, revised, verified, and converted into decisions.**
 
+MAMV-IR refactors the original autonomous coding prototype so a clean process exit is **evidence**, not proof that a user's task is done. A reasoning model (Kimi K3 or another adapter) may plan, interpret evidence, diagnose, and predict repairs. The MAMV-IR governance layer owns the structured ledger, applies observer authority boundaries, evaluates acceptance criteria, and blocks unsupported completion.
+
+## Flow
+
+```text
+interpret_goal → plan → generate_code → execute → collect_evidence → verify
+  → constitutional_review ── verified → finish
+                           └─ insufficient evidence / contradicted → diagnose
+                              → propose_repair → fix_code → execute
 ```
- goal ──▶ plan ──▶ generate_code ──▶ execute ──▶ evaluate ──success──▶ done
-                        ▲                            │
-                        │                         failure
-                        │                            ▼
-                        └──────────────────────── fix_code
-                             (until max_iterations, then give up)
-```
 
-Every step is logged to a scratchpad, so the full reasoning trace — plan,
-code, stdout/stderr, and each fix — is inspectable after the fact, not
-just the final answer.
+## Information model
 
-## Status
+Every run records JSON-serializable `Context`, `Evidence`, `Claim`, `AcceptanceCriterion`, `VerificationResult`, immutable `ExecutionAttempt`, and chronological `LedgerEvent` records. Sandbox observations authoritatively establish stdout, stderr, exit code, and timeout only. Test runners and static analyzers own their respective results. The reasoning model cannot verify an unobserved runtime fact.
 
-This is a working prototype, verified end-to-end with an offline mock LLM
-(no API key needed to try it). Swap in a real `MOONSHOT_API_KEY` to run it
-against actual Kimi K3. Test coverage: 8/8 passing, covering the
-happy path, the self-correction path, and the give-up-gracefully path.
+Required criteria are evaluated independently. Completion requires an execution, every required criterion supported at the configurable `MAMV_IR_CONFIDENCE_THRESHOLD` (default `0.80`), no contradiction, and a passing constitutional review. Failed diagnoses and repair predictions are retained and marked contradicted rather than erased.
 
-## Quick start
+### Example
+
+For a goal that requires `Result: 42`, a program that prints `Result: 41` and exits `0` produces valid sandbox evidence but fails the stdout criterion, so the run is rejected and diagnosed. A program that exits `0` *and* prints `Result: 42` can finish after constitutional review.
+
+## Run locally
 
 ```bash
 pip install -r requirements.txt
-
-# Runs immediately, no API key required — uses the offline MockLLM
-# and a resource-limited subprocess sandbox (Docker not required either).
-python main.py --backend mock --sandbox subprocess "compute fibonacci"
-
-# Watch it hit a real ZeroDivisionError and fix it:
+python main.py --backend mock --sandbox subprocess fibonacci
 python main.py --backend mock --sandbox subprocess "bug demo: division" --verbose
 ```
 
-## Using the real Kimi K3 backend
+The offline `MockLLM` is deterministic and all tests run without an API key or network.
+
+## Kimi and other providers
+
+Kimi remains supported through `KimiK3Backend`, using Moonshot's OpenAI-compatible API:
 
 ```bash
-cp .env.example .env
-# edit .env, set MOONSHOT_API_KEY=your-key-here
-
-python main.py "Write and run a script that finds all primes under 1000"
+export MOONSHOT_API_KEY=your-key
+# optional: export MOONSHOT_BASE_URL=https://api.moonshot.cn/v1
+python main.py --backend kimi --sandbox subprocess "Write a Python program"
 ```
 
-With no `--backend`/`--sandbox` flags, the CLI auto-selects: Kimi K3 if
-`MOONSHOT_API_KEY` is set (otherwise the mock), and Docker if a daemon is
-reachable (otherwise the subprocess fallback).
+To add another provider, implement the provider-neutral `LLMBackend.chat(messages) -> str` interface in `agent/llm.py`; do not add governance behavior to the adapter. The graph depends only on that interface.
 
-## Sandboxing
+## Persistence helpers
 
-Two execution backends are provided:
+`agent.informational.serialization` exposes `serialize_run`, `deserialize_run`, `export_claim_evidence_graph`, and `chronological_ledger`. These support later durable storage without changing the in-memory model.
 
-- **`DockerSandbox`** (production): each attempt runs in a fresh,
-  network-disabled container with memory and CPU limits, then the
-  container is destroyed. This is the actual isolation boundary between
-  LLM-written code and your machine — use this for anything beyond local
-  experimentation.
-- **`SubprocessSandbox`** (dev fallback): runs code as a local process
-  with memory/CPU/timeout limits. Convenient when no Docker daemon is
-  available, but it is **not** a security boundary — no filesystem or
-  network isolation. Don't point it at untrusted goals in production.
+## Current limitations
 
-Select explicitly with `--sandbox docker` / `--sandbox subprocess`, or
-leave `--sandbox auto` to pick Docker whenever a daemon is reachable.
-
-## Project layout
-
-```
-agent/
-  state.py     # AgentState: the typed dict passed between graph nodes
-  llm.py       # KimiK3Backend (real) + MockLLM (offline dev/test double)
-  sandbox.py   # DockerSandbox (real) + SubprocessSandbox (dev fallback)
-  graph.py     # The LangGraph StateGraph: plan/code/execute/evaluate/fix
-main.py        # CLI entry point
-tests/         # pytest suite, runs entirely offline against MockLLM
-```
-
-## Extending it
-
-- **Give it tools beyond code execution** (web browsing, terminal
-  commands, file I/O): add new nodes to the graph in `agent/graph.py` and
-  extend `AgentState` with whatever context those tools need. The
-  plan/execute/evaluate/fix skeleton doesn't change.
-- **Multi-file projects instead of single scripts**: `SubprocessSandbox`
-  and `DockerSandbox` already run in an isolated temp dir/container — swap
-  `code: str` for a dict of `{filename: contents}` and adjust `run()` to
-  write multiple files before executing the entrypoint.
-- **Longer-running goals**: LangGraph supports checkpointing
-  (`langgraph-checkpoint`, already in requirements.txt) so a run can be
-  paused and resumed instead of living entirely in one process — useful
-  once `max_iterations` or wall-clock budgets get large.
-
-## Known limitations of this prototype
-
-- `MockLLM` only knows how to "fix" the one deliberately-injected bug
-  demo; it's a development/test double, not a general code-fixing model.
-  Real self-correction behavior only shows up with the Kimi K3 backend.
-- No retry/backoff on the Kimi K3 API calls yet — a transient network
-  failure will currently propagate as an exception rather than being
-  treated as a recoverable sandbox-style failure.
-- The fix loop only ever sees the single most recent failure, not the
-  full history of prior attempts — fine for shallow bugs, but it can
-  re-try a fix it already effectively attempted on a harder, multi-bug
-  script. Feeding `state["attempts"]` (not just the last one) into the
-  fix prompt is the natural next improvement.
+- Acceptance criteria are currently deterministic methods (`exit_code` and `stdout_contains`) plus an explicit-evidence fallback; richer test and static-analysis integrations are future work.
+- Generated code is still a single Python script.
+- The subprocess sandbox is a development fallback, not a host-security boundary; use Docker for untrusted code.
+- A model can propose a weak or ambiguous goal interpretation, but ambiguity is retained and cannot silently satisfy missing evidence.
