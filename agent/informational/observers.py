@@ -7,7 +7,13 @@ class AuthorizationResult:
     allowed: bool; explanation: str; matched_rule: str; relevant_evidence_ids: tuple[str, ...] = ()
 _RUNTIME={"stdout","stderr","exit_code","timeout"}
 
-def authorize_claim_verification(claim: Claim, evidence: Sequence[Evidence], verification_method: str | None = None) -> AuthorizationResult:
+def authorize_claim_verification(claim: Claim, evidence: Sequence[Evidence]) -> AuthorizationResult:
+    """Authorize verified claims from their observer and evidence provenance.
+
+    Verification methods belong to acceptance-criterion evaluation, not claim
+    authority: a claim does not identify the criterion it supports.  Accepting
+    a method here would therefore imply a protection this policy cannot apply.
+    """
     relevant=tuple(e.evidence_id for e in evidence if e.evidence_id in claim.evidence_ids)
     types={e.evidence_type for e in evidence if e.evidence_id in relevant}
     if claim.status != "verified": return AuthorizationResult(True,"Claim is not requesting verified status.","non_verified",relevant)
@@ -28,7 +34,7 @@ def authorize_claim_verification(claim: Claim, evidence: Sequence[Evidence], ver
 
 def can_verify_claim(claim: Claim) -> bool:
     """Compatibility wrapper for callers that do not yet provide evidence."""
-    return authorize_claim_verification(claim, (), None).allowed
+    return authorize_claim_verification(claim, ()).allowed
 
 def observer_for_evidence(evidence_type: str) -> str:
     return {"test_result":"test_runner","static_analysis_result":"static_analyzer","human_feedback":"human"}.get(evidence_type,"sandbox")
