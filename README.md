@@ -55,3 +55,33 @@ To add another provider, implement the provider-neutral `LLMBackend.chat(message
 - Generated code is still a single Python script.
 - The subprocess sandbox is a development fallback, not a host-security boundary; use Docker for untrusted code.
 - A model can propose a weak or ambiguous goal interpretation, but ambiguity is retained and cannot silently satisfy missing evidence.
+
+## Governance hardening and migration
+
+Verification is now **policy-authorized**, rather than merely represented by
+record fields. The authority matrix evaluates the requested verified status,
+observer, claim type, evidence type, and verification method; a confidence
+number cannot expand an observer's authority. Ledger events emitted by new
+runs form a SHA-256 chain, while execution emits dedicated timeout evidence.
+Criteria proposed by a reasoning model must be explicitly policy-approved
+before required criteria can permit completion.
+
+### Serialized-record migration
+
+`deserialize_run` remains backward compatible with pre-v2 JSON: list fields
+are converted to immutable tuples, metadata/payload dictionaries are copied
+into immutable mappings, and old unhashed ledger events load as legacy audit
+records. New serialized runs include `previous_event_hash` and `event_hash`.
+Legacy events cannot retrospectively prove tamper evidence; append new chained
+events for forward integrity. Invalid confidence values are rejected on load.
+
+## Remaining security assumptions
+
+The event chain detects changes to records supplied to validation, but does not
+provide external timestamping, key signatures, durable storage, or protection
+against an attacker who can replace an entire ledger and its trust anchor. The
+subprocess sandbox remains explicitly **not** a real host isolation boundary.
+The graph currently performs direct runtime checks (`exit_code`,
+`stdout_contains`, and `not_timed_out`); test/static-analysis integrations
+require their own authoritative evidence producers before they can verify a
+criterion.
