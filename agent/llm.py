@@ -38,18 +38,16 @@ class KimiK3Backend(LLMBackend):
         base_url: str | None = None,
         temperature: float = 0.3,
     ):
-        from openai import OpenAI  # local import so MockLLM path needs no dep at import time
+        from openai import (
+            OpenAI,
+        )  # local import so MockLLM path needs no dep at import time
 
         self.model = model
         self.temperature = temperature
         api_key = api_key or os.environ.get("MOONSHOT_API_KEY")
         if not api_key:
-            raise RuntimeError(
-                "MOONSHOT_API_KEY is not set. Export it or pass api_key= explicitly."
-            )
-        base_url = base_url or os.environ.get(
-            "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"
-        )
+            raise RuntimeError("MOONSHOT_API_KEY is not set. Export it or pass api_key= explicitly.")
+        base_url = base_url or os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
     def chat(self, messages: List[Dict[str, str]]) -> str:
@@ -84,9 +82,35 @@ class MockLLM(LLMBackend):
 
         if "Interpret the goal as JSON" in joined:
             goal = _extract_goal(joined)
-            expected = "34" if "fibonacci" in goal.lower() else ("10" if "bug demo" in goal.lower() else ("42" if "42" in goal else "Result:"))
+            expected = (
+                "34"
+                if "fibonacci" in goal.lower()
+                else ("10" if "bug demo" in goal.lower() else ("42" if "42" in goal else "Result:"))
+            )
             import json
-            return json.dumps({"normalized_goal": goal, "assumptions": [], "ambiguities": [] if expected != "Result:" else ["The precise expected output is not specified."], "acceptance_criteria": [{"description": "Program exits without a runtime error", "verification_method": "exit_code", "required": True, "expected_result": "0"}, {"description": "Program prints the expected result", "verification_method": "stdout_contains", "required": True, "expected_result": expected}], "required_evidence": ["exit_code", "stdout"]})
+
+            return json.dumps(
+                {
+                    "normalized_goal": goal,
+                    "assumptions": [],
+                    "ambiguities": [] if expected != "Result:" else ["The precise expected output is not specified."],
+                    "acceptance_criteria": [
+                        {
+                            "description": "Program exits without a runtime error",
+                            "verification_method": "exit_code",
+                            "required": True,
+                            "expected_result": "0",
+                        },
+                        {
+                            "description": "Program prints the expected result",
+                            "verification_method": "stdout_contains",
+                            "required": True,
+                            "expected_result": expected,
+                        },
+                    ],
+                    "required_evidence": ["exit_code", "stdout"],
+                }
+            )
 
         if "You are planning" in joined:
             goal = _extract_goal(joined)
@@ -127,12 +151,7 @@ def _mock_code_for_goal(goal: str) -> str:
     deliberate ZeroDivisionError so the self-correction loop has something
     real to fix on the first pass."""
     if "bug demo" in goal.lower():
-        code = (
-            "BUGGY_DIVISOR = 0\n"
-            "def compute():\n"
-            "    return 10 / BUGGY_DIVISOR\n"
-            "print('Result:', compute())\n"
-        )
+        code = "BUGGY_DIVISOR = 0\ndef compute():\n    return 10 / BUGGY_DIVISOR\nprint('Result:', compute())\n"
     elif "fibonacci" in goal.lower():
         code = (
             "def fib(n):\n"
