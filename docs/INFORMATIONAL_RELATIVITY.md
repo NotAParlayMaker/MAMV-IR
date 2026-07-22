@@ -25,3 +25,31 @@ print(serialize_answer(answer))
 ```
 
 Reproducibility remains limited by unpinned remote artifacts, unavailable source material, runtime/provider behavior, and any context not recorded in the frame.
+
+## MAMV-Model candidate export contract
+
+`CandidateExport` is the versioned handoff from MAMV-Model to MAMV. It is a
+candidate-only record, never a verification result or verdict. Its schema version
+is `mamv-model-candidate-export/v1`; consumers should reject an unknown version
+rather than reinterpret fields silently. Every export has limitations (an empty
+array means none were identified), its actual generation strategy, and its
+inference frame.
+
+Every `ClaimCandidate` and `EvidenceCandidate` declares a derivation:
+`retrieved`, `extracted`, or `generated`. Generated material must include an
+`evidence_density` from 0 to 1; retrieved and extracted material cannot borrow
+that field to imply a model inference. Model self-report is named
+`model_stated_confidence`, not verification confidence. Coherence is not part of
+the export contract and must not be interpreted as a truth signal.
+
+Fragmented retrieval exports one `CandidateAnswer` per chunk and each answer has
+exactly one `evidence_scope`; callers must explicitly request an integrated
+export before combining chunks. Multi-sample strategies (`self_consistency`,
+`self_refine`, and `multi_model_debate`) preserve every `GenerationSample`, the
+selected sample ID, and the selection rationale. Proposed evidence relations are
+only proposals for MAMV to assess, not assertions of support.
+
+`grounding_critiques` records visible shortcomings. A grounding requirement may
+only lower `model_stated_confidence` or add critique; it has no success path that
+marks a candidate correct. Candidate export is session-scoped metadata and does
+not create cross-session memory, a cache, or training data.
