@@ -115,3 +115,7 @@ full linter, type checker, security scanner, or tests.
 # Metacognitive governance
 
 When enabled, MAMV-IR records concise structured reasoning summaries, assumptions, uncertainty, alternatives, critiques, and snapshots. These are model inferences rather than observed evidence: sandbox, test-runner, and static-analyzer evidence retain their authority boundaries. Self-consistency is only a stability signal, never a vote that establishes truth. Communicability review makes a conclusion inspectable through its claim, evidence references, criterion, source, and limitations. The deliberation record is persisted with the ledger, but it neither exposes private chain-of-thought nor establishes consciousness, correctness, or faithful access to latent model computation. See [Metacognitive governance](docs/METACOGNITION.md).
+
+## Informational Relativity
+
+MAMV-IR treats verification as relative to an explicit informational frame: context, observer authority, evidence scope, verification method, acceptance criteria, artifact versions, policy, and time. A sandbox exit code can verify that a process exited successfully, but it cannot by itself verify that the user’s task was completed. Frames make those boundaries explicit, inspectable, serializable, and tamper-evident. Use `--show-frame`, `--frame-summary`, `--show-stale-results`, or `--export-frames PATH` to inspect a run without flooding normal output.

@@ -1,5 +1,6 @@
 """Typed LangGraph state; structured informational records are authoritative."""
 from typing import Any, TypedDict
+from .informational.relativity import CompletionDecision, FrameTransformation, InformationalFrame, InformationalPerspective, RelativeVerificationResult
 from .informational.models import AcceptanceCriterion, Claim, Critique, DeliberationRecord, Evidence, ExecutionAttempt, LedgerEvent, MetacognitiveSnapshot, ReasoningStep, VerificationResult
 class AgentState(TypedDict, total=False):
     goal: str; original_goal: str; normalized_goal: str; assumptions: list[str]; ambiguities: list[str]
@@ -8,4 +9,5 @@ class AgentState(TypedDict, total=False):
     ledger_events: list[LedgerEvent]; attempts: list[ExecutionAttempt]; iteration: int; max_iterations: int
     constitutional_violations: list[str]; final_decision: dict[str, Any] | None; completion_status: str
     done: bool; success: bool; final_answer: str | None
+    informational_frames: list[InformationalFrame]; active_frame_id: str | None; frame_transformations: list[FrameTransformation]; relative_verification_results: list[RelativeVerificationResult]; informational_perspectives: list[InformationalPerspective]; stale_result_ids: list[str]; completion_decision: CompletionDecision | None
     deliberation: DeliberationRecord; reasoning_candidates: list[object]; refinement_history: list[object]; metacognition_enabled: bool

@@ -7,12 +7,14 @@ import hashlib
 import json
 import os
 import inspect
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
 from langgraph.graph import END, StateGraph
 
 from .informational.constitution import review
+from .informational.relativity import (CompletionDecision, RelativeVerificationResult, RelativeVerificationStatus, build_informational_frame, collect_perspectives)
 from .informational.ledger import chained_event
 from .informational.models import (
     AcceptanceCriterion,
@@ -248,6 +250,7 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
             )
             for index, item in enumerate(payload["acceptance_criteria"])
         ]
+        initial_frame = build_informational_frame(context=context, observer="reasoning_model", authority_policy="deterministic_low_risk_v1", verification_method="goal_interpretation", evidence_scope=(), criteria=criteria, assumptions=payload.get("assumptions", ()), purpose="Interpret the requested goal", limitations=("Model interpretations are proposals, not observed evidence.",))
         evidence = list(state.get("evidence", []))
         for response in raw_responses:
             evidence.append(
@@ -281,6 +284,8 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
             "assumptions": payload.get("assumptions", []),
             "ambiguities": payload.get("ambiguities", []),
             "acceptance_criteria": criteria,
+            "informational_frames": [*state.get("informational_frames", []), initial_frame],
+            "active_frame_id": initial_frame.frame_id,
             "required_evidence": payload.get("required_evidence", []),
             "evidence": evidence,
             "claims": claims,
@@ -566,7 +571,18 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
                     [],
                 )
             )
-        return {**state, "verification_results": results, "claims": claims}
+        relative_results = list(state.get("relative_verification_results", []))
+        frames = list(state.get("informational_frames", []))
+        for result in results:
+            criterion = next(c for c in state["acceptance_criteria"] if c.criterion_id == result.criterion_id)
+            frame = build_informational_frame(context=attempt.context, observer=result.observer, authority_policy=criterion.approval_source or "policy_unapproved", verification_method=criterion.verification_method, evidence_scope=result.supporting_evidence_ids + result.contradictory_evidence_ids, criteria=(criterion,), assumptions=state.get("assumptions", ()), artifact_versions={"generated_code": attempt.context.code_hash or "unknown"}, parent_frame=frames[-1] if frames else None, purpose="Evaluate acceptance criterion", limitations=tuple(result.uncertainties))
+            frames.append(frame)
+            status = RelativeVerificationStatus.SUPPORTED if result.satisfied else (RelativeVerificationStatus.INSUFFICIENT_EVIDENCE if result.uncertainties else RelativeVerificationStatus.CONTRADICTED)
+            relative_results.append(RelativeVerificationResult(new_id("relative_verification"), next((c.claim_id for c in reversed(claims) if criterion.criterion_id in c.statement), "claim_unrecorded"), frame.frame_id, status, result.observer, criterion.verification_method, "authorized" if criterion.approval_status == "approved" else "unauthorized", result.supporting_evidence_ids, result.contradictory_evidence_ids, result.uncertainties, (criterion.criterion_id,), result.confidence, datetime.now(timezone.utc), None, tuple(result.uncertainties), result.explanation))
+        ledger = list(state.get("ledger_events", []))
+        for relative in relative_results[len(state.get("relative_verification_results", [])):]:
+            ledger.append(_event({**state, "ledger_events": ledger}, "relative_verification_recorded", "governance", attempt.context, {"verification_id": relative.verification_id, "frame_id": relative.frame_id, "status": relative.status.value}))
+        return {**state, "verification_results": results, "claims": claims, "informational_frames": frames, "active_frame_id": frames[-1].frame_id if frames else state.get("active_frame_id"), "relative_verification_results": relative_results, "informational_perspectives": list(collect_perspectives(relative_results)), "ledger_events": ledger}
 
     def constitutional(state: AgentState) -> AgentState:
         """Consume verification results to gate completion and record the decision."""
@@ -585,7 +601,8 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
             "claim_ids": [claim.claim_id for claim in state["claims"] if claim.status != "contradicted"],
             "evidence_ids": [record.evidence_id for record in state["evidence"]],
         }
-        candidate = {**state, "iteration": iteration, "final_decision": decision}
+        completion = CompletionDecision(new_id("completion"), state.get("active_frame_id") or "frame_missing", decision["status"], tuple(c.criterion_id for c in state["acceptance_criteria"] if c.required), tuple(r.verification_id for r in state.get("relative_verification_results", [])), "constitutional_review", tuple(), ("This decision applies only to the recorded artifacts, criteria, and environment.",), datetime.now(timezone.utc))
+        candidate = {**state, "iteration": iteration, "final_decision": decision, "completion_decision": completion}
         violations = review(candidate)
         open_errors=[c for c in state.get("deliberation", DeliberationRecord()).critiques if c.severity == "error" and not c.resolved]
         if open_errors: violations.append("[open_metacognitive_critique] completion: unresolved error-level critique blocks completion.")
@@ -713,7 +730,7 @@ def run_agent(goal: str, llm: LLMBackend, sandbox: Sandbox, max_iterations: int 
             "attempts": [],
             "claims": [],
             "evidence": [],
-            "ledger_events": [],
+            "ledger_events": [], "informational_frames": [], "active_frame_id": None, "frame_transformations": [], "relative_verification_results": [], "informational_perspectives": [], "stale_result_ids": [], "completion_decision": None,
             "iteration": 0,
             "done": False,
             "sandbox_name": type(sandbox).__name__,

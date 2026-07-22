@@ -1,0 +1,7 @@
+# Architecture report: Informational Relativity baseline
+
+MAMV-IR keeps immutable dataclass records in `agent/informational/models.py`: `Context`, `Evidence`, `Claim`, acceptance criteria, verification results, execution attempts, and ledger events.  `agent/graph.py` creates these records in a LangGraph flow (`interpret_goal` through execution, verification, constitutional review, diagnosis, and repair). The existing SHA-256 chain is implemented by `agent/informational/ledger.py`; serialization and legacy-normalization entry points are in `agent/informational/serialization.py`.
+
+Observer relativity already existed implicitly: `agent/informational/observers.py` permits sandbox runtime observations, test results only from test runners, static-analysis results only from static analyzers, and forbids a reasoning model from verifying unobserved facts. `constitution.review` uses that policy before a claim marked verified is accepted. Context code hashes already prevent test and static-analysis evidence from being selected across generated-code versions. Acceptance-criterion approval and constitutional review already separate model proposals from completion. These constraints were not, however, represented as one inspectable, immutable verification frame.
+
+This change makes that implicit relation explicit while retaining these record types, authority enforcement, graph phases, hash chain, and backward-compatible run serialization.
