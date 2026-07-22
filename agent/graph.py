@@ -22,9 +22,11 @@ from .informational.models import (
     ExecutionAttempt,
     LedgerEvent,
     VerificationResult,
+    Critique, DeliberationRecord, MetacognitiveSnapshot, ReasoningStep,
     new_id,
     now,
 )
+from .metacognition import MetacognitionConfig, parse_reflective_output, reflective_prompt
 from .informational.observers import authorize_claim_verification
 from .llm import LLMBackend, LLMCallFailed
 from .prompts import (
@@ -307,6 +309,32 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
             return llm_unavailable(state, exc)
         return {**state, "plan": reply, "scratchpad": _append(state, "scratchpad", f"[plan]\n{reply}")}
 
+    def reflect(state: AgentState, phase: str, text: str) -> AgentState:
+        """Persist concise model rationale; it is explicitly non-authoritative."""
+        if not state.get("metacognition_enabled"): return state
+        context=_context(state)
+        try: raw=_chat(llm, [{"role":"user","content":reflective_prompt(text)}], .0)
+        except LLMCallFailed as exc: return llm_unavailable(state, exc)
+        parsed=parse_reflective_output(raw); record=state.get("deliberation", DeliberationRecord())
+        evidence=list(state.get("evidence", [])); ledger=list(state.get("ledger_events", []))
+        if any("unparseable" in x for x in parsed.warnings):
+            evidence.append(Evidence(new_id("ev"), "model_output_unparseable", raw, "reasoning_model", context, {"authoritative":False, "kind":"model_inference"}))
+        step=ReasoningStep(new_id("step"), phase, parsed.summary or "Reflective output was unparseable.", parsed.assumptions, parsed.uncertainties, parsed.alternatives_considered, (), (), parsed.confidence, "reasoning_model", len(record.reasoning_steps)+1)
+        snapshot=MetacognitiveSnapshot(new_id("snapshot"), state.get("normalized_goal",state["goal"]), phase, tuple(x.step_id for x in (*record.reasoning_steps,step)), (), parsed.assumptions, parsed.uncertainties, parsed.confidence, "seek_evidence" if parsed.evidence_needed else "continue")
+        ledger.append(_event({**state, "ledger_events": ledger},"reasoning_step_recorded","reasoning_model",context,{"step_id":step.step_id,"parse_warnings":parsed.warnings}))
+        ledger.append(_event({**state, "ledger_events": ledger},"metacognitive_snapshot_recorded","governance",context,{"snapshot_id":snapshot.snapshot_id}))
+        return {**state,"evidence":evidence,"deliberation":DeliberationRecord((*record.reasoning_steps,step),record.critiques,(*record.snapshots,snapshot)),"ledger_events":ledger}
+
+    def reflect_on_plan(state: AgentState) -> AgentState: return reflect(state, "planning", state.get("plan", ""))
+    def reflect_on_result(state: AgentState) -> AgentState: return reflect(state, "verification", state.get("scratchpad", [""])[-1])
+    def self_critique(state: AgentState) -> AgentState:
+        if not state.get("metacognition_enabled"): return state
+        record=state.get("deliberation", DeliberationRecord()); unsupported=[c for c in state.get("claims",[]) if c.claim_type != "observation" and not c.evidence_ids]
+        critiques=tuple(Critique(new_id("crit"), record.reasoning_steps[-1].step_id if record.reasoning_steps else None,c.claim_id,"metacognitive_policy","unsupported","Claim has no evidence references.",(),"warning") for c in unsupported)
+        if not critiques:return state
+        context=_context(state); events=[*_append(state,"ledger_events",_event(state,"critique_recorded","metacognitive_policy",context,{"count":len(critiques)}))]
+        return {**state,"deliberation":DeliberationRecord(record.reasoning_steps,(*record.critiques,*critiques),record.snapshots),"ledger_events":events}
+
     def generate(state: AgentState) -> AgentState:
         """Generate candidate code; malformed model output causes abstention, not execution."""
         messages = [{"role": "system", "content": GENERATE_SYSTEM_PROMPT}, {"role": "user", "content": GENERATE_PROMPT.format(goal=state["normalized_goal"], plan=state["plan"])}]
@@ -559,6 +587,8 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
         }
         candidate = {**state, "iteration": iteration, "final_decision": decision}
         violations = review(candidate)
+        open_errors=[c for c in state.get("deliberation", DeliberationRecord()).critiques if c.severity == "error" and not c.resolved]
+        if open_errors: violations.append("[open_metacognitive_critique] completion: unresolved error-level critique blocks completion.")
         success = bool(
             state["attempts"]
             and not state["attempts"][-1].timed_out
@@ -633,10 +663,13 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
     for name, node in (
         ("interpret_goal", interpret_goal),
         ("plan", plan),
+        ("reflect_on_plan", reflect_on_plan),
         ("generate_code", generate),
         ("execute", execute),
         ("collect_evidence", passthrough),
         ("verify", verify),
+        ("reflect_on_result", reflect_on_result),
+        ("self_critique", self_critique),
         ("constitutional_review", constitutional),
         ("diagnose", diagnose),
         ("propose_repair", repair),
@@ -645,11 +678,14 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
         graph.add_node(name, node)
     graph.set_entry_point("interpret_goal")
     graph.add_conditional_edges("interpret_goal", lambda state: "finish" if state.get("done") else "plan", {"finish": END, "plan": "plan"})
-    graph.add_conditional_edges("plan", lambda state: "finish" if state.get("done") else "generate_code", {"finish": END, "generate_code": "generate_code"})
+    graph.add_conditional_edges("plan", lambda state: "finish" if state.get("done") else "reflect_on_plan", {"finish": END, "reflect_on_plan": "reflect_on_plan"})
+    graph.add_edge("reflect_on_plan", "generate_code")
     graph.add_conditional_edges("generate_code", lambda state: "finish" if state.get("done") else "execute", {"finish": END, "execute": "execute"})
     graph.add_edge("execute", "collect_evidence")
     graph.add_edge("collect_evidence", "verify")
-    graph.add_edge("verify", "constitutional_review")
+    graph.add_edge("verify", "reflect_on_result")
+    graph.add_edge("reflect_on_result", "self_critique")
+    graph.add_edge("self_critique", "constitutional_review")
     graph.add_conditional_edges(
         "constitutional_review",
         lambda state: "finish" if state["done"] else "diagnose",
@@ -665,8 +701,10 @@ def build_graph(llm: LLMBackend, sandbox: Sandbox):
     return graph.compile()
 
 
-def run_agent(goal: str, llm: LLMBackend, sandbox: Sandbox, max_iterations: int = 3) -> AgentState:
+def run_agent(goal: str, llm: LLMBackend, sandbox: Sandbox, max_iterations: int = 3, metacognition: bool | None = None, reasoning_samples: int | None = None) -> AgentState:
     """Run the graph with its compatible public signature and empty evidence ledger."""
+    config=MetacognitionConfig.from_env()
+    if metacognition is not None or reasoning_samples is not None: config=MetacognitionConfig(metacognition if metacognition is not None else config.enabled, reasoning_samples or config.reasoning_samples, config.max_reflection_iterations, config.require_stated_assumptions, config.require_evidence_references, config.confidence_threshold)
     return build_graph(llm, sandbox).invoke(
         {
             "goal": goal,
@@ -680,5 +718,6 @@ def run_agent(goal: str, llm: LLMBackend, sandbox: Sandbox, max_iterations: int 
             "done": False,
             "sandbox_name": type(sandbox).__name__,
             "model_name": type(llm).__name__,
+            "metacognition_enabled": config.enabled, "deliberation": DeliberationRecord(), "reasoning_candidates": [], "refinement_history": [],
         }
     )
