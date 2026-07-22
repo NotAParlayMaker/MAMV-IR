@@ -1,25 +1,27 @@
 # Informational Relativity
 
-## Definition
-Informational Relativity is the technical rule that a verification status is valid only in its recorded informational frame: context, observer authority, evidence scope, method, criteria, artifact versions, policy, assumptions, and time. It does not assert that all interpretations are equally good or that observers create facts.
+MAMV-IR records verification in governance frames and bounded model answers in inference frames. An inference frame is not a claim that all truth is subjective: it identifies the conditions under which an output was produced and can be checked.
 
-## Context, scope, and authority
-Contexts identify the goal and source/artifact information. Claims may be local, execution, artifact, run, environment, temporal, or general in scope. The authority matrix remains the enforcement point: a sandbox establishes runtime observations, a test runner establishes configured test results for an artifact, and a static analyzer establishes only its configured analysis. A reasoning model may propose interpretations but cannot author observed runtime evidence.
+## Inference frames
 
-## Artifacts and temporal validity
-Artifact references identify a version and content hash. Evidence carries optional artifact, environment, method, frame, scope, and validity fields. A frame derivation is conservative: changed artifact, criterion, policy, context, or evidence scope requires re-verification. Historical results are retained rather than overwritten, and callers can identify stale or superseded results.
+`build_inference_frame` creates immutable, canonical JSON-serializable records containing hashes of the question, document, and selected context; a model, adapter, and tokenizer reference; retrieval source IDs (including dropped IDs); integration mode and token budget; generation strategy and parameters; assumptions; limitations; creation time; and an optional parent frame. It never stores API keys, raw access tokens, or unrestricted prompts. Frame IDs are SHA-256-derived from those bounded conditions, so identical inputs receive the same ID. An unpinned model revision receives the explicit reproducibility limitation.
 
-## Transformations and comparisons
-`derive_frame` records a parent frame and `FrameTransformation`; it defaults to re-verification for changed fields. Cross-frame comparisons classify scope-distinct claims separately from contradictions. Perspectives can be compatible, conflicting, or incomparable; agreement is never substituted for authorized evidence.
+## Context, retrieval, and reasoning
 
-## Completion, metacognition, and constitutional review
-A `CompletionDecision` cites one frame and means that required criteria were satisfied in that recorded frame. Receipt language explicitly disclaims context-free or universal truth. Metacognitive summaries remain model inferences, not observations; constitutional review and policy approval still gate completion.
+A retrieved answer is relative to its selected chunks, not silently to an entire corpus. Callers should record warnings such as `context_truncated`, `relevant_context_may_be_missing`, `fragmented_answers_disagree`, `retrieval_returned_no_sources`, and `answer_relative_to_selected_chunks` in the concise `ReasoningTrace`. Direct, self-consistency, self-refine, integrated, and fragmented strategies are recorded in `GenerationFrame`; no strategy is universally superior merely because it is more elaborate.
 
-## Serialization and migration
-Runs serialize frames, transformations, relative verifications, perspectives, and completion decisions. Loading old records creates a clearly labelled `legacy_inferred` frame with a limitation; legacy event hashes are preserved and are not recomputed.
+## Confidence and derivation
 
-## Security limitations
-The SHA-256 event chain detects changes to hashed local records, including frame data, but does not supply external timestamping, independent authenticity, complete testing, security proof, or universal correctness.
+`ConfidenceSignals` separately records model-stated confidence, sample consensus, grounding support, retrieval coverage, and coherence. None alone establishes correctness, and consensus/coherence are never converted into grounding confidence. `derive_inference_frame` returns a new frame and an immutable `InferenceFrameTransition`; it does not mutate history. Use it for refinement, follow-ups, retrieval, integration, strategy, or bounded conversation-history changes. If earlier turns are dropped, record the warning: `Answer was generated without one or more earlier session turns.` Session context is not permanent model learning.
 
-## Example
-A test runner can record a supported `tests_pass` result in a frame bound to code hash A and a test environment. After code hash B is registered, that result remains historical but does not silently support B; derive a new frame and run verification again.
+## Serialization and comparison
+
+`serialize_answer`, `deserialize_answer`, `serialize_inference_frame`, and `deserialize_inference_frame` use stable compact JSON, validate ISO-8601 timezone-aware timestamps and confidence ranges, and ignore unknown optional fields conservatively. `compare_answer_frames` reports context, artifact, retrieval, strategy, text equality, compatibility, re-verification need, and changed dimensions.
+
+```python
+frame = build_inference_frame(question="What changed?", context="chunk A", model_id="local", model_revision="abc", selected_source_ids=("A",), created_at="2025-01-01T00:00:00+00:00")
+answer = Answer("A bounded answer", inference_frame=frame)
+print(serialize_answer(answer))
+```
+
+Reproducibility remains limited by unpinned remote artifacts, unavailable source material, runtime/provider behavior, and any context not recorded in the frame.

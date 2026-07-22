@@ -107,6 +107,10 @@ def main() -> int:
     parser.add_argument("--frame-summary", action="store_true", help="Print a compact informational-frame summary")
     parser.add_argument("--show-stale-results", action="store_true", help="Print stale relative verification IDs")
     parser.add_argument("--export-frames", metavar="PATH", help="Write informational frames as JSON")
+    parser.add_argument("--save-frame", metavar="PATH", help="Write the active frame as JSON")
+    parser.add_argument("--compare-frame", metavar="PATH", help="Compare a saved frame ID with the active frame")
+    parser.add_argument("--pin-model-revision", metavar="REVISION", help="Record a requested model revision where the selected backend supports it")
+    parser.add_argument("--pin-tokenizer-revision", metavar="REVISION", help="Record a requested tokenizer revision where the selected backend supports it")
     parser.add_argument("--verbose", action="store_true", help="Print the full reasoning scratchpad")
     parser.add_argument(
         "--receipt",
@@ -147,6 +151,23 @@ def main() -> int:
         if active: print(f"context={active.context_id}; observer={active.observer_type}; criteria={', '.join(active.criterion_ids)}")
     if args.show_stale_results:
         print("stale results: " + (", ".join(final_state.get("stale_result_ids", [])) or "none"))
+    if args.save_frame:
+        active = next((frame for frame in final_state.get("informational_frames", []) if frame.frame_id == final_state.get("active_frame_id")), None)
+        if active is None:
+            print("No active frame is available to save.", file=sys.stderr)
+            return 1
+        Path(args.save_frame).write_text(__import__("json").dumps(__import__("agent.informational.serialization", fromlist=["export_informational_frames"]).export_informational_frames({"informational_frames": [active]})[0], sort_keys=True), encoding="utf-8")
+        print(f"Saved active frame to {args.save_frame}")
+    if args.compare_frame:
+        try:
+            saved = __import__("json").loads(Path(args.compare_frame).read_text(encoding="utf-8"))
+            active_id = final_state.get("active_frame_id")
+            print("frame comparison: " + ("same frame" if saved.get("frame_id") == active_id else "different frames; re-verification may be required"))
+        except (OSError, ValueError) as error:
+            print(f"Could not compare frame: {error}", file=sys.stderr)
+            return 1
+    if args.pin_model_revision or args.pin_tokenizer_revision:
+        print("Requested artifact pins are advisory for this governance CLI; backend artifact identity is recorded by answer inference integrations.")
     if args.export_frames:
         Path(args.export_frames).write_text(__import__("json").dumps(export_informational_frames(final_state), sort_keys=True), encoding="utf-8")
         print(f"Exported informational frames to {args.export_frames}")
