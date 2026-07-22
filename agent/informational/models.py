@@ -64,21 +64,26 @@ class DeliberationRecord:
 @dataclass(frozen=True)
 class Context:
     iteration: int; goal: str; runtime: str | None = None; sandbox: str | None = None; model: str | None = None; code_hash: str | None = None; timestamp: str = field(default_factory=now)
-    environment_metadata: Mapping[str, Any] = field(default_factory=dict)
-    def __post_init__(self): object.__setattr__(self, "environment_metadata", _mapping(self.environment_metadata))
+    environment_metadata: Mapping[str, Any] = field(default_factory=dict); context_id: str | None = None; source: str | None = None; version: str | None = None; content_hash: str | None = None; temporal_bounds: tuple[str, str] | None = None; included_artifact_refs: tuple[str, ...] = field(default_factory=tuple); excluded_information: tuple[str, ...] = field(default_factory=tuple); purpose: str | None = None
+    def __post_init__(self):
+        object.__setattr__(self, "environment_metadata", _mapping(self.environment_metadata)); object.__setattr__(self,"included_artifact_refs",_tuple(self.included_artifact_refs)); object.__setattr__(self,"excluded_information",_tuple(self.excluded_information))
+        if self.temporal_bounds is not None: object.__setattr__(self,"temporal_bounds",_tuple(self.temporal_bounds))
+        if self.context_id is None: object.__setattr__(self,"context_id",f"context_{self.content_hash or self.code_hash or new_id('legacy')}")
 
 @dataclass(frozen=True)
 class Evidence:
     evidence_id: str; evidence_type: EvidenceType; value: Any; source: str; context: Context
-    reliability: Mapping[str, Any] | None = None
+    reliability: Mapping[str, Any] | None = None; origin_frame_id: str | None = None; artifact_id: str | None = None; artifact_version: str | None = None; environment_id: str | None = None; observed_at: str | None = None; validity_window: tuple[str, str] | None = None; scope: str | None = None; method: str | None = None; limitations: tuple[str, ...] = field(default_factory=tuple)
     def __post_init__(self):
         if self.reliability is not None: object.__setattr__(self, "reliability", _mapping(self.reliability))
+        object.__setattr__(self,"limitations",_tuple(self.limitations))
+        if self.validity_window is not None: object.__setattr__(self,"validity_window",_tuple(self.validity_window))
 
 @dataclass(frozen=True)
 class Claim:
     claim_id: str; statement: str; claim_type: ClaimType; observer: str | None; context: Context | None
     evidence_ids: tuple[str, ...] = field(default_factory=tuple); confidence: float = 0.0; status: ClaimStatus = "proposed"
-    derived_from: tuple[str, ...] = field(default_factory=tuple); contradicted_by: tuple[str, ...] | None = None; supersedes: str | None = None
+    derived_from: tuple[str, ...] = field(default_factory=tuple); contradicted_by: tuple[str, ...] | None = None; supersedes: str | None = None; frame_id: str | None = None; interpretation_id: str | None = None; scope: str | None = None
     def __post_init__(self):
         object.__setattr__(self, "evidence_ids", _tuple(self.evidence_ids)); object.__setattr__(self, "derived_from", _tuple(self.derived_from))
         if self.contradicted_by is not None: object.__setattr__(self, "contradicted_by", _tuple(self.contradicted_by))
@@ -87,7 +92,9 @@ class Claim:
 @dataclass(frozen=True)
 class AcceptanceCriterion:
     criterion_id: str; description: str; verification_method: str; required: bool; expected_result: str | None = None
-    proposed_by: str | None = "reasoning_model"; approved_by: str | None = None; approval_status: ApprovalStatus = "proposed"; approval_source: str | None = None
+    proposed_by: str | None = "reasoning_model"; approved_by: str | None = None; approval_status: ApprovalStatus = "proposed"; approval_source: str | None = None; frame_id: str | None = None; required_scope: str | None = None; authorized_observer_types: tuple[str, ...] = field(default_factory=tuple); authorized_methods: tuple[str, ...] = field(default_factory=tuple); required_evidence_types: tuple[str, ...] = field(default_factory=tuple); validity_requirements: tuple[str, ...] = field(default_factory=tuple); policy_approval_id: str | None = None
+    def __post_init__(self):
+        for n in ("authorized_observer_types","authorized_methods","required_evidence_types","validity_requirements"): object.__setattr__(self,n,_tuple(getattr(self,n)))
 
 @dataclass(frozen=True)
 class VerificationResult:
