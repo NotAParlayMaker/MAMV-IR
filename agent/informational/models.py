@@ -22,6 +22,45 @@ def _tuple(value: Any) -> tuple: return tuple(value or ())
 def _confidence(value: float) -> None:
     if not 0.0 <= value <= 1.0: raise ValueError(f"confidence must be between 0.0 and 1.0, got {value!r}")
 
+ReasoningPhase = Literal["interpretation", "planning", "generation", "diagnosis", "repair", "verification", "constitutional_review"]
+ReasoningKind = Literal["model_inference", "observed_evidence"]
+CritiqueCategory = Literal["unsupported", "contradicted", "ambiguous", "incomplete", "policy_violation", "overconfident", "circular", "stale_context", "other"]
+RecommendedAction = Literal["continue", "seek_evidence", "revise", "abstain", "finish"]
+
+@dataclass(frozen=True)
+class ReasoningStep:
+    step_id: str; phase: ReasoningPhase; summary: str; assumptions: tuple[str, ...] = field(default_factory=tuple)
+    uncertainties: tuple[str, ...] = field(default_factory=tuple); alternatives_considered: tuple[str, ...] = field(default_factory=tuple)
+    evidence_ids: tuple[str, ...] = field(default_factory=tuple); claim_ids: tuple[str, ...] = field(default_factory=tuple)
+    model_confidence: float | None = None; created_by: str = "reasoning_model"; sequence: int = 0; kind: ReasoningKind = "model_inference"
+    def __post_init__(self):
+        for name in ("assumptions", "uncertainties", "alternatives_considered", "evidence_ids", "claim_ids"):
+            object.__setattr__(self, name, _tuple(getattr(self, name)))
+        if self.model_confidence is not None: _confidence(self.model_confidence)
+        if self.kind == "observed_evidence" and self.created_by == "reasoning_model":
+            raise ValueError("model-generated reasoning cannot be classified as observed_evidence")
+
+@dataclass(frozen=True)
+class Critique:
+    critique_id: str; target_step_id: str | None; target_claim_id: str | None; critic: str; category: CritiqueCategory; summary: str
+    evidence_ids: tuple[str, ...] = field(default_factory=tuple); severity: Literal["info", "warning", "error"] = "warning"; resolved: bool = False; resolution_summary: str | None = None
+    def __post_init__(self): object.__setattr__(self, "evidence_ids", _tuple(self.evidence_ids))
+
+@dataclass(frozen=True)
+class MetacognitiveSnapshot:
+    snapshot_id: str; active_goal: str; current_phase: str; reasoning_step_ids: tuple[str, ...] = field(default_factory=tuple)
+    open_critique_ids: tuple[str, ...] = field(default_factory=tuple); assumptions: tuple[str, ...] = field(default_factory=tuple)
+    unresolved_uncertainties: tuple[str, ...] = field(default_factory=tuple); confidence: float | None = None; recommended_action: RecommendedAction = "continue"
+    def __post_init__(self):
+        for name in ("reasoning_step_ids", "open_critique_ids", "assumptions", "unresolved_uncertainties"): object.__setattr__(self, name, _tuple(getattr(self, name)))
+        if self.confidence is not None: _confidence(self.confidence)
+
+@dataclass(frozen=True)
+class DeliberationRecord:
+    reasoning_steps: tuple[ReasoningStep, ...] = field(default_factory=tuple); critiques: tuple[Critique, ...] = field(default_factory=tuple); snapshots: tuple[MetacognitiveSnapshot, ...] = field(default_factory=tuple)
+    def __post_init__(self):
+        for name in ("reasoning_steps", "critiques", "snapshots"): object.__setattr__(self, name, _tuple(getattr(self, name)))
+
 @dataclass(frozen=True)
 class Context:
     iteration: int; goal: str; runtime: str | None = None; sandbox: str | None = None; model: str | None = None; code_hash: str | None = None; timestamp: str = field(default_factory=now)

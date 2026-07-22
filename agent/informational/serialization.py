@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
-from .models import AcceptanceCriterion, Claim, Context, Evidence, ExecutionAttempt, LedgerEvent, VerificationResult
+from .models import AcceptanceCriterion, Claim, Context, Critique, DeliberationRecord, Evidence, ExecutionAttempt, LedgerEvent, MetacognitiveSnapshot, ReasoningStep, VerificationResult
 
 def _plain(value):
     if is_dataclass(value): return {f.name:_plain(getattr(value,f.name)) for f in fields(value)}
@@ -21,7 +21,10 @@ def deserialize_run(payload: str) -> dict:
     s["verification_results"]=[VerificationResult(**x) for x in s.get("verification_results", [])]
     s["ledger_events"]=[LedgerEvent(**{**x,"context":_context(x["context"])}) for x in s.get("ledger_events", [])]
     s["attempts"]=[ExecutionAttempt(**{**x,"context":_context(x["context"])}) for x in s.get("attempts", [])]
+    d=s.get("deliberation", {})
+    s["deliberation"]=DeliberationRecord(tuple(ReasoningStep(**x) for x in d.get("reasoning_steps", [])), tuple(Critique(**x) for x in d.get("critiques", [])), tuple(MetacognitiveSnapshot(**x) for x in d.get("snapshots", [])))
     return s
 def export_claim_evidence_graph(state: dict) -> dict:
-    return {"claims":[_plain(x) for x in state.get("claims",[])],"evidence":[_plain(x) for x in state.get("evidence",[])],"edges":[{"claim_id":c.claim_id,"evidence_id":e} for c in state.get("claims",[]) for e in c.evidence_ids]}
+    d=state.get("deliberation", DeliberationRecord())
+    return {"claims":[_plain(x) for x in state.get("claims",[])],"evidence":[_plain(x) for x in state.get("evidence",[])],"reasoning_steps":[_plain(x) for x in d.reasoning_steps],"edges":[{"claim_id":c.claim_id,"evidence_id":e} for c in state.get("claims",[]) for e in c.evidence_ids]}
 def chronological_ledger(state: dict) -> list[LedgerEvent]: return sorted(state.get("ledger_events",[]), key=lambda event:event.timestamp)

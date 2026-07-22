@@ -112,3 +112,6 @@ The graph supports direct runtime checks (`exit_code`, `stdout_contains`, and
 `not_timed_out`), sandboxed pytest-backed `tests_pass`, and the deliberately
 minimal `passes_static_analysis` check. Static analysis does not replace a
 full linter, type checker, security scanner, or tests.
+# Metacognitive governance
+
+When enabled, MAMV-IR records concise structured reasoning summaries, assumptions, uncertainty, alternatives, critiques, and snapshots. These are model inferences rather than observed evidence: sandbox, test-runner, and static-analyzer evidence retain their authority boundaries. Self-consistency is only a stability signal, never a vote that establishes truth. Communicability review makes a conclusion inspectable through its claim, evidence references, criterion, source, and limitations. The deliberation record is persisted with the ledger, but it neither exposes private chain-of-thought nor establishes consciousness, correctness, or faithful access to latent model computation. See [Metacognitive governance](docs/METACOGNITION.md).

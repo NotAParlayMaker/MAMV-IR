@@ -35,7 +35,7 @@ def _claims_for_evidence(final_state: dict, evidence_ids: tuple[str, ...]) -> li
     ]
 
 
-def print_receipt(final_state: dict) -> None:
+def print_receipt(final_state: dict, show_deliberation: bool = False, show_critiques: bool = False) -> None:
     """Print a concise, human-readable summary of governance completion."""
     criteria = {criterion.criterion_id: criterion for criterion in final_state.get("acceptance_criteria", [])}
 
@@ -69,6 +69,14 @@ def print_receipt(final_state: dict) -> None:
             print(f"- {violation}")
     else:
         print("- none")
+    deliberation=final_state.get("deliberation")
+    if show_deliberation and deliberation:
+        print("deliberation:")
+        for step in deliberation.reasoning_steps[-1:]: print(f"- {step.phase}: {step.summary} (confidence {step.model_confidence})")
+    if show_critiques and deliberation:
+        print("open critiques:")
+        for critique in deliberation.critiques:
+            if not critique.resolved: print(f"- [{critique.severity}] {critique.summary}")
 
 
 def main() -> int:
@@ -83,6 +91,10 @@ def main() -> int:
         "--sandbox", choices=["auto", "docker", "subprocess"], default="auto", help="Execution sandbox"
     )
     parser.add_argument("--max-iterations", type=int, default=3)
+    parser.add_argument("--metacognition", action="store_true", help="Record concise structured deliberation summaries")
+    parser.add_argument("--reasoning-samples", type=int, default=None)
+    parser.add_argument("--show-deliberation", action="store_true")
+    parser.add_argument("--show-critiques", action="store_true")
     parser.add_argument("--verbose", action="store_true", help="Print the full reasoning scratchpad")
     parser.add_argument(
         "--receipt",
@@ -102,7 +114,7 @@ def main() -> int:
     print(f"[moonshot-agent-x] backend={type(llm).__name__} sandbox={type(sandbox).__name__}")
     print(f"[moonshot-agent-x] goal: {args.goal}\n")
 
-    final_state = run_agent(args.goal, llm, sandbox, max_iterations=args.max_iterations)
+    final_state = run_agent(args.goal, llm, sandbox, max_iterations=args.max_iterations, metacognition=True if args.metacognition else None, reasoning_samples=args.reasoning_samples)
 
     if args.verbose:
         print("\n--- reasoning trace ---")
@@ -116,7 +128,7 @@ def main() -> int:
     print(final_state["final_answer"])
 
     if args.receipt:
-        print_receipt(final_state)
+        print_receipt(final_state, args.show_deliberation, args.show_critiques)
 
     if args.save_run:
         destination = Path(args.save_run)
