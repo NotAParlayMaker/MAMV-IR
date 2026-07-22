@@ -119,3 +119,7 @@ When enabled, MAMV-IR records concise structured reasoning summaries, assumption
 ## Informational Relativity
 
 MAMV-IR treats verification as relative to an explicit informational frame: context, observer authority, evidence scope, verification method, acceptance criteria, artifact versions, policy, and time. A sandbox exit code can verify that a process exited successfully, but it cannot by itself verify that the user’s task was completed. Frames make those boundaries explicit, inspectable, serializable, and tamper-evident. Use `--show-frame`, `--frame-summary`, `--show-stale-results`, or `--export-frames PATH` to inspect a run without flooding normal output.
+
+## Answer Informational Relativity
+
+MAMV-IR can also record an answer relative to an explicit inference frame: model artifacts, selected context, retrieval scope, reasoning strategy, grounding configuration, and generation settings. The same question can produce different valid or invalid outputs under different frames. Frame metadata makes those conditions inspectable without claiming context-free truth or exposing private chain-of-thought. `Answer`, `InferenceFrame`, and their stable JSON helpers live in `agent.informational`; confidence signals remain separate self-report, consensus, grounding, retrieval-coverage, and coherence measures.

@@ -111,3 +111,103 @@ def classify_cross_frame_relation(left,right, left_scope=None,right_scope=None) 
 def collect_perspectives(results): return tuple(InformationalPerspective(_id("perspective",{"verification":r.verification_id}),r.frame_id,r.claim_id,r.explanation,r.status,r.supporting_evidence_ids+r.contradicting_evidence_ids,r.limitations) for r in results)
 def compare_perspectives(left,right): return "compatible" if left.status==right.status else ("conflicting" if left.frame_id==right.frame_id else "incomparable")
 def find_cross_frame_conflicts(perspectives): return tuple((a.perspective_id,b.perspective_id) for i,a in enumerate(perspectives) for b in perspectives[i+1:] if compare_perspectives(a,b)=="conflicting")
+
+
+# Answer-inference frames are intentionally separate from governance frames above.
+# The former describe bounded model output; the latter describe verification authority.
+@dataclass(frozen=True)
+class ModelArtifactReference:
+    model_id: str
+    revision: str | None = None
+    adapter_id: str | None = None
+    adapter_revision: str | None = None
+    tokenizer_id: str | None = None
+    tokenizer_revision: str | None = None
+    local_content_hash: str | None = None
+
+@dataclass(frozen=True)
+class RetrievalFrame:
+    query: str
+    retriever_type: str | None = None
+    requested_top_k: int | None = None
+    selected_source_ids: tuple[str, ...] = field(default_factory=tuple)
+    dropped_source_ids: tuple[str, ...] = field(default_factory=tuple)
+    integration_mode: str = "direct"
+    max_tokens: int | None = None
+    used_tokens: int | None = None
+    def __post_init__(self):
+        object.__setattr__(self, "selected_source_ids", _items(self.selected_source_ids))
+        object.__setattr__(self, "dropped_source_ids", _items(self.dropped_source_ids))
+
+@dataclass(frozen=True)
+class GenerationFrame:
+    strategy: str = "direct"
+    temperature: float | None = None
+    top_p: float | None = None
+    max_new_tokens: int | None = None
+    num_samples: int | None = None
+    max_refine_iterations: int | None = None
+    require_grounding: bool = False
+    def __post_init__(self):
+        for name in ("temperature", "top_p"):
+            value = getattr(self, name)
+            if value is not None and not 0 <= value <= 1:
+                raise ValueError(f"{name} must be between 0.0 and 1.0")
+
+@dataclass(frozen=True)
+class InferenceFrame:
+    frame_id: str
+    question_hash: str
+    document_hash: str | None
+    context_hash: str
+    model: ModelArtifactReference
+    retrieval: RetrievalFrame
+    generation: GenerationFrame
+    assumptions: tuple[str, ...] = field(default_factory=tuple)
+    limitations: tuple[str, ...] = field(default_factory=tuple)
+    created_at: str = "1970-01-01T00:00:00+00:00"
+    parent_frame_id: str | None = None
+    def __post_init__(self):
+        object.__setattr__(self, "assumptions", _items(self.assumptions))
+        object.__setattr__(self, "limitations", _items(self.limitations))
+        _parse_timestamp(self.created_at)
+    def canonical(self) -> str: return _canonical(self)
+
+@dataclass(frozen=True)
+class InferenceFrameTransition:
+    source_frame_id: str
+    target_frame_id: str
+    reason: str
+    changed_fields: tuple[str, ...] = field(default_factory=tuple)
+    answer_changed: bool = False
+    grounding_changed: bool = False
+    explanation: str = ""
+    def __post_init__(self): object.__setattr__(self, "changed_fields", _items(self.changed_fields))
+
+def _hash_text(value: str | None) -> str | None:
+    return sha256(value.encode("utf-8")).hexdigest() if value is not None else None
+
+def _parse_timestamp(value: str) -> datetime:
+    try: parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as error: raise ValueError("created_at must be an ISO-8601 timestamp") from error
+    _aware(parsed, "created_at"); return parsed
+
+def build_inference_frame(*, question: str, context: str = "", document: str | None = None, model_id: str = "unknown", model_revision: str | None = None, adapter_id: str | None = None, adapter_revision: str | None = None, tokenizer_id: str | None = None, tokenizer_revision: str | None = None, local_content_hash: str | None = None, retriever_type: str | None = None, requested_top_k: int | None = None, selected_source_ids=(), dropped_source_ids=(), integration_mode: str = "direct", max_tokens: int | None = None, used_tokens: int | None = None, strategy: str = "direct", temperature: float | None = None, top_p: float | None = None, max_new_tokens: int | None = None, num_samples: int | None = None, max_refine_iterations: int | None = None, require_grounding: bool = False, assumptions=(), limitations=(), created_at: str = "1970-01-01T00:00:00+00:00", parent_frame_id: str | None = None) -> InferenceFrame:
+    """Create a deterministic, secret-free description of an answer's conditions."""
+    _parse_timestamp(created_at)
+    limits = list(limitations)
+    if model_revision is None and "Model revision was not pinned; exact reproduction is not guaranteed." not in limits:
+        limits.append("Model revision was not pinned; exact reproduction is not guaranteed.")
+    retrieval = RetrievalFrame(question, retriever_type, requested_top_k, tuple(selected_source_ids), tuple(dropped_source_ids), integration_mode, max_tokens, used_tokens)
+    generation = GenerationFrame(strategy, temperature, top_p, max_new_tokens, num_samples, max_refine_iterations, require_grounding)
+    model = ModelArtifactReference(model_id, model_revision, adapter_id, adapter_revision, tokenizer_id, tokenizer_revision, local_content_hash)
+    payload = {"question_hash": _hash_text(question), "document_hash": _hash_text(document), "context_hash": _hash_text(context) or _hash_text(""), "model": model, "retrieval": retrieval, "generation": generation, "assumptions": tuple(assumptions), "limitations": tuple(limits), "parent_frame_id": parent_frame_id}
+    return InferenceFrame(_id("inference", payload), **payload, created_at=created_at)
+
+def derive_inference_frame(source: InferenceFrame, *, reason: str, changed_fields=(), answer_changed: bool = False, grounding_changed: bool = False, explanation: str = "", **changes) -> tuple[InferenceFrame, InferenceFrameTransition]:
+    data = {name: getattr(source, name) for name in InferenceFrame.__dataclass_fields__ if name not in {"frame_id", "parent_frame_id"}}
+    data.update(changes); data["parent_frame_id"] = source.frame_id
+    payload = {name: data[name] for name in ("question_hash", "document_hash", "context_hash", "model", "retrieval", "generation", "assumptions", "limitations", "created_at", "parent_frame_id")}
+    # Preserve hashes when deriving; frame id is still deterministic over all conditions.
+    target = InferenceFrame(_id("inference", {k:v for k,v in payload.items() if k != "created_at"}), **payload)
+    return target, InferenceFrameTransition(source.frame_id, target.frame_id, reason, tuple(changed_fields), answer_changed, grounding_changed, explanation)
